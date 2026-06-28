@@ -6,15 +6,15 @@ This project studies **calendar spread market-making on CME** and pursues two go
 
 ### Goal 1 — When and where is an exchange incentive pivotal?
 
-> **What is the expected P&L of quoting the calendar spread under realistic fill and hedging dynamics; under what conditions does an exchange incentive — fee discount, maker rebate, or other compensation — become necessary; and which market should that incentive target?**
+> **What is the expected P&L of quoting the calendar spread under realistic fill and hedging dynamics; under what conditions does an exchange incentive — fee discount, market maker rebate, or other compensation — become necessary; and which market should that incentive target?**
 
 A trader can express a calendar view either by trading the two outright contracts separately (legging) or by trading the exchange-listed spread instrument as a single order. The spread instrument quotes a tighter bid–ask than the implied cost of crossing both outright books, so traders prefer it — and the market maker on the other side faces a real **legging cost** if it crosses out into the outrights to flatten (the worked example below puts this at \$25/contract for ES).
 
-But that legging cost is not the maker's expected loss. A maker that crosses out *immediately* on every fill would lose; a real desk does not. Its actual P&L also includes the bid–ask it earns on round-trip and offsetting flow, passive (resting) fills that avoid crossing, and CME implied matching — all of which can turn the activity profitable without any subsidy. The legging cost is therefore a floor on what the maker must overcome, not a verdict.
+But that legging cost is not the market maker's expected loss. A market maker that crosses out *immediately* on every fill would lose; a real desk does not. Its actual P&L also includes the bid–ask it earns on round-trip and offsetting flow, passive (resting) fills that avoid crossing, and CME implied matching — all of which can turn the activity profitable without any subsidy. The legging cost is therefore a floor on what the market maker must overcome, not a verdict.
 
-The deliverable is a model of the maker's **expected** P&L — legging cost, passive vs. aggressive fill probabilities, adverse selection, and inventory/holding risk — estimated bottom-up from real order-book data (via Databento) rather than assumed. We then ask the sharper question: holding that P&L below break-even, **how large a rebate would be pivotal**, and how does that compare to CME's actual maker-incentive programs for these products? We start from the `project_fetch_data.py` snapshot and the legging-cost analysis below and build out from there.
+The deliverable is a model of the market maker's **expected** P&L — legging cost, passive vs. aggressive fill probabilities, adverse selection, and inventory/holding risk — estimated bottom-up from real order-book data (via Databento) rather than assumed. We then ask the sharper question: holding that P&L below break-even, **how large a rebate would be pivotal**, and how does that compare to CME's actual market maker-incentive programs for these products? We start from the `project_fetch_data.py` snapshot and the legging-cost analysis below and build out from there.
 
-A related question runs through Goal 1: **how does market making the calendar spread differ from market making a normal product/instrument?** The spread is two-legged, links to the outright books via CME implied matching, carries basis rather than directional inventory risk, and lives in a thinner, roll-driven market — so the maker's role, risks, and the incentive it needs may all differ from the outright case. We treat this difference as a question to investigate rather than assume.
+A related question runs through Goal 1: **how does market making the calendar spread differ from market making a normal product/instrument?** The spread is two-legged, links to the outright books via CME implied matching, carries basis rather than directional inventory risk, and lives in a thinner, roll-driven market — so the market maker's role, risks, and the incentive it needs may all differ from the outright case. We treat this difference as a question to investigate rather than assume.
 
 ### Goal 2 — Relationship analysis and a market-making strategy for the deferred leg and the spread
 
@@ -24,7 +24,7 @@ First we characterize the three markets empirically: their liquidity (bid–ask,
 
 On that footing we build the quoting strategy. Because the deferred outright and the spread are the two thin, linked markets that follow the liquid front month, we make markets in *both* of them: anchor fair value to the front-month book and a carry-based estimate of the basis, hedge directional risk in the liquid front leg, and manage inventory and legging risk rather than forecasting index direction. The deferred leg and the spread are quoted consistently (since one is implied from the other plus the front leg), so the strategy treats them as a joint book.
 
-The two goals are linked: the quote width and quoting behavior the strategy can sustain depend directly on the incentive analysis in Goal 1. The rebate determined there sets how tightly the maker can afford to quote and still break even, so Goal 1 fixes the economic floor and Goal 2 builds the quoting policy on top of it.
+The two goals are linked: the quote width and quoting behavior the strategy can sustain depend directly on the incentive analysis in Goal 1. The rebate determined there sets how tightly the market maker can afford to quote and still break even, so Goal 1 fixes the economic floor and Goal 2 builds the quoting policy on top of it.
 
 ### Instruments in scope
 
@@ -36,14 +36,26 @@ We begin with the **E-mini S&P 500 (ES) calendar spread** (e.g. ESM6–ESU6) as 
 | Energy | WTI Crude Oil (CL), Henry Hub Natural Gas (NG), RBOB Gasoline (RB), Heating Oil (HO) |
 | Metals | Gold (GC), Silver (SI), Copper (HG) |
 | Grains | Corn (ZC), Soybeans (ZS), Wheat (ZW) |
+| Interest Rates | 2-Year T-Note (ZT), 5-Year T-Note (ZF), 10-Year T-Note (ZN) |
+| Foreign Exchange | Euro FX (6E), Japanese Yen (6J), British Pound (6B) |
 
-All of the E-mini equity index futures share the same structure as ES — a quarterly (Mar/Jun/Sep/Dec) cycle with the same roll-driven demand — and their calendar spreads quote in 0.05-point ticks, so the legging-cost analysis transfers directly across the equity index complex.
+The instruments we intend to explore are *futures* calendar spreads (one order, both legs). They are distinct from **Calendar Spread Options (CSOs)** — options written on the spread — which CME also lists but which are outside this project's scope.
 
-These are *futures* calendar spreads (one order, both legs). They are distinct from **Calendar Spread Options (CSOs)** — options written on the spread — which CME also lists but which are outside this project's scope.
+### Tick size heterogeneity between spreads and outrights
+
+While products within an asset class often share structural characteristics—such as the quarterly roll cycle in equity indices—the tick size relationship between the exchange-listed calendar spread and its underlying outright legs is not uniform. For example, the ES calendar spread trades in highly compressed 0.05-point increments against its 0.25-point outright legs, whereas the E-mini Dow (YM) calendar spread and its outrights both quote in identical 1.00-point ticks.
+
+This heterogeneity directly impacts our core research objectives by altering the market maker's baseline economics:
+
+1. **Magnified Legging Deficits:** When a spread is quoted at a severely compressed tick relative to the outrights, the premium collected for providing liquidity on the spread shrinks, while the mechanical cost to cross the outright books remains wide. Modeling this specific deficit is crucial for Goal 1, as products with highly compressed spread ticks will empirically require disproportionately larger exchange rebates to sustain persistent, two-sided quotes.
+2. **Constraints on Quoting Strategy:** The relationship between the spread tick and outright tick dictates the boundaries of risk management. Because the structural legging disadvantage varies by product, it establishes a hard constraint on how aggressively a market maker can quote the deferred leg and the spread. Capturing this tick dynamic is a prerequisite for formulating a sound, empirically-driven market-making strategy that consistently prices the joint book across linked markets, as pursued in Goal 2.
+
+To address this structurally across the CME complex, our model does not assume a fixed tick ratio. Instead, we will construct a configuration matrix that defines the exact outright tick size, spread tick size, and contract multiplier for every product in scope. This maps all varying point values—whether from equity indices, metals, or fractionally-quoted rates—into a standardized dollar-per-contract expected P&L metric. By dollar-normalizing the outputs, the model isolates the true economic legging cost and allows us to empirically evaluate exchange rebate efficacy and quoting thresholds across entirely different tick regimes.
+
 
 ## Motivation
 
-Market participants have a clear incentive to trade the spread, while the market maker appears to lose money — on the surface. That tension — a real legging cost on one side, persistent tight two-sided quotes on the other — is what motivates both goals: modeling the maker's *true* expected P&L and when an incentive is pivotal (Goal 1), and characterizing the front/back/spread relationship to quote the deferred leg and the spread (Goal 2).
+Market participants have a clear incentive to trade the spread, while the market maker appears to lose money — on the surface. That tension — a real legging cost on one side, persistent tight two-sided quotes on the other — is what motivates both goals: modeling the market maker's *true* expected P&L and when an incentive is pivotal (Goal 1), and characterizing the front/back/spread relationship to quote the deferred leg and the spread (Goal 2).
 
 ### Why traders need the spread: rolling positions
 
@@ -92,9 +104,9 @@ To flatten immediately, the market maker legs out in the outright books:
 
 $$\text{Cost of legging out} = 7401.25 - 7340.00 = 61.25 \text{ points}$$
 
-But the maker only collected the spread ask it sold:
+But the market maker only collected the spread ask it sold:
 
-$$\text{P\&L} = 60.75 - 61.25 = -0.50 \text{ points} = -0.50 \times \$50 = \boxed{-\$25 \text{ per contract}}$$
+$$\text{P\\&L} = 60.75 - 61.25 = -0.50 \text{ points} = -0.50 \times \$50 = \boxed{-\$25 \text{ per contract}}$$
 
 ### The punchline
 
@@ -105,4 +117,28 @@ So the surface picture is:
 - **Trader:** saves ~0.50 points by using the tight spread instrument instead of legging.
 - **Market maker:** appears to lose ~\$25/contract on every immediately-hedged fill.
 
-A maker that crossed out on every fill would indeed lose — but the \$25 is a **floor**, not its expected P&L. Liquid, tight spread markets exist precisely because the economics close elsewhere: earning the bid–ask on round-trip and offsetting flow, passive fills that avoid crossing, implied matching, and disciplined inventory management. Two questions follow, and they are the project's goals: *given* those dynamics, what is the maker's expected P&L and when does an exchange incentive actually become pivotal (**Goal 1**); and, using the statistical relationship among the front month, back month, and spread, how should the maker quote the deferred leg and the spread (**Goal 2**).
+A market maker that crossed out on every fill would indeed lose — but the \$25 is a **floor**, not its expected P&L. Liquid, tight spread markets exist precisely because the economics close elsewhere: earning the bid–ask on round-trip and offsetting flow, passive fills that avoid crossing, implied matching, and disciplined inventory management. Two questions follow, and they are the project's goals: *given* those dynamics, what is the market maker's expected P&L and when does an exchange incentive actually become pivotal (**Goal 1**); and, using the statistical relationship among the front month, back month, and spread, how should the market maker quote the deferred leg and the spread (**Goal 2**).
+
+## Project Outcomes and Usage
+
+### Delivering on Goal 1
+
+- Bottom-up P&L model: We will deliver a comprehensive model of the maker's expected P&L, estimated from real order-book data, to isolate the true economic impact of legging costs.
+- Rebate efficiency analysis: By holding P&L below break-even, we will determine exactly how large an exchange incentive must be to become pivotal for sustaining persistent, two-sided quotes.
+
+### Delivering on Goal 2
+
+- Empirical relationship characterization: We will provide a statistical analysis of the front-month, back-month, and calendar spread markets, confirming the lead–lag and co-movement relationships that define market structure.
+- Joint-book quoting policy: Building on the economic floor established in Goal 1, we will deliver an  market-making strategy that quotes the deferred leg and the calendar spread consistently as a joint book, anchored to the front-month contract.
+
+### How to run the project (Aspirational)
+
+While our output pipeline is currently under active development, our planned implementation focuses on an accessible application interface to ensure ease of use.
+
+To generate research insights, launch the application dashboard by running the main entry script: **run_analysis.py**
+
+The application interface allows you to intuitively select your desired asset class and product of interest. Upon selection, the application synthesizes the underlying leg transactions to model the maker's expected P&L. The application also allows the user to generate a summary_report.pdf (saved to a user-defined directory), providing a comprehensive briefing on our research that applies to a asset class or a product selected by user:
+
+- **Incentive pivotality report:** The output of the bottom-up P&L model, which isolates the economic impact of legging costs and determines the specific exchange incentive magnitude required to be pivotal for sustaining persistent, two-sided quotes.
+- **Strategy performance metrics:** An evaluation of the joint-book quoting policy for the deferred leg and calendar spread, which leverages empirical characterization of market lead–lag and co-movement relationships to maintain consistent, front-month-anchored quoting.
+
