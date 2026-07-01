@@ -43,17 +43,6 @@ We begin with the **E-mini S&P 500 (ES) calendar spread** (e.g. ESM6–ESU6) as 
 
 The instruments we intend to explore are *futures* calendar spreads (one order, both legs). They are distinct from **Calendar Spread Options (CSOs)** — options written on the spread — which CME also lists but which are outside this project's scope.
 
-### Tick size heterogeneity between spreads and outrights
-
-While products within an asset class often share structural characteristics—such as the quarterly roll cycle in equity indices—the tick size relationship between the exchange-listed calendar spread and its underlying outright legs is not uniform. For example, the ES calendar spread trades in highly compressed 0.05-point increments against its 0.25-point outright legs, whereas the E-mini Dow (YM) calendar spread and its outrights both quote in identical 1.00-point ticks.
-
-This heterogeneity directly impacts our core research objectives by altering the market maker's baseline economics:
-
-1. **Magnified Legging Deficits:** When a spread is quoted at a severely compressed tick relative to the outrights, the premium collected for providing liquidity on the spread shrinks, while the mechanical cost to cross the outright books remains wide. Modeling this specific deficit is crucial for Goal 1, as products with highly compressed spread ticks will empirically require disproportionately larger exchange rebates to sustain persistent, two-sided quotes.
-2. **Constraints on Quoting Strategy:** The relationship between the spread tick and outright tick dictates the boundaries of risk management. Because the structural legging disadvantage varies by product, it establishes a hard constraint on how aggressively a market maker can quote the deferred leg and the spread. Capturing this tick dynamic is a prerequisite for formulating a sound, empirically-driven market-making strategy that consistently prices the joint book across linked markets, as pursued in Goal 2.
-
-To address this structurally across the CME complex, our model does not assume a fixed tick ratio. Instead, we will construct a configuration matrix that defines the exact outright tick size, spread tick size, and contract multiplier for every product in scope. This maps all varying point values—whether from equity indices, metals, or fractionally-quoted rates—into a standardized dollar-per-contract expected P&L metric. By dollar-normalizing the outputs, the model isolates the true economic legging cost and allows us to empirically evaluate exchange rebate efficacy and quoting thresholds across entirely different tick regimes.
-
 
 ## Motivation
 
@@ -133,14 +122,55 @@ A market maker that crossed out on every fill would indeed lose — but the \$25
 - Empirical relationship characterization: We will provide a statistical analysis of the front-month, back-month, and calendar spread markets, confirming the lead–lag and co-movement relationships that define market structure.
 - Joint-book quoting policy: Building on the economic floor established in Goal 1, we will deliver an  market-making strategy that quotes the deferred leg and the calendar spread consistently as a joint book, anchored to the front-month contract.
 
-### How to run the project (Aspirational)
-
-While our output pipeline is currently under active development, our planned implementation focuses on an accessible application interface to ensure ease of use.
-
-To generate research insights, launch the application dashboard by running the main entry script: **run_analysis.py**
-
-The application interface allows you to intuitively select your desired asset class and product of interest. Upon selection, the application synthesizes the underlying leg transactions to model the maker's expected P&L. The application also allows the user to generate a summary_report.pdf (saved to a user-defined directory), providing a comprehensive briefing on our research that applies to a asset class or a product selected by user:
+### How to run the project
+The application allows you to intuitively select your desired asset class and product of interest. Upon selection, the application synthesizes the underlying leg transactions to model the maker's expected P&L. The application also allows the user to generate a summary_report.pdf (saved to a user-defined directory), providing a comprehensive briefing on our research that applies to an asset class or a product selected by user:
 
 - **Incentive pivotality report:** The output of the bottom-up P&L model, which isolates the economic impact of legging costs and determines the specific exchange incentive magnitude required to be pivotal for sustaining persistent, two-sided quotes.
 - **Strategy performance metrics:** An evaluation of the joint-book quoting policy for the deferred leg and calendar spread, which leverages empirical characterization of market lead–lag and co-movement relationships to maintain consistent, front-month-anchored quoting.
 
+### Prerequisites
+- [uv](https://docs.astral.sh/uv/) installed
+- A [Databento](https://databento.com) account and API key
+
+### 1. Fork and clone the repo
+Fork this repository to your own GitHub account, then clone the fork:
+```bash
+git clone <your-fork-url>
+cd finm_37000_project
+```
+
+Add the main repo as an upstream remote so you can pull in updates:
+```bash
+git remote add upstream https://github.com/marijajov65/finm_37000_project.git
+git fetch upstream
+git merge upstream/main
+```
+
+### 2. Install dependencies
+```bash
+uv sync
+```
+This creates a `.venv` and installs all dependencies pinned in `uv.lock`, using the Python version specified in `.python-version`.
+
+### 3. Set up environment variables
+Copy the example file and fill in your own Databento API key:
+```bash
+cp .env.example .env
+```
+Then edit `.env`:
+DATABENTO_API_KEY=your_key_here
+
+### 4. Run the project
+```bash
+uv run src/main.py
+```
+
+### 5. Run tests
+```bash
+uv run pytest
+```
+
+## Contributing
+1. Create a branch on your fork for your changes.
+2. Commit and push to your fork.
+3. Open a pull request from your fork into `marijajov65/finm_37000_project` (`main` branch).
