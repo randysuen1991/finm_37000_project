@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Iterator, Optional, Union
 
 import pandas as pd
 
@@ -188,6 +188,9 @@ class MarketDataFetcher:
 
     Public interface (stable — downstream modules code against this):
       - ``fetch_calendar_spread_data(front_month, product, time_start, time_end)``
+        — whole window at once; fine for short windows.
+      - ``iter_calendar_spread_data(front_month, product, time_start, time_end)``
+        — generator yielding one day at a time; use for long windows.
       - ``fetch_calendar_spread_contract_specification(front_month, product)``
 
     The private fetch/definition methods are the implementation surface
@@ -259,6 +262,26 @@ class MarketDataFetcher:
             back_trades=back_trades,
             spread_trades=spread_trades,
         )
+
+    def iter_calendar_spread_data(
+        self,
+        front_month: str,
+        product: str,
+        time_start: TimeLike,
+        time_end: TimeLike,
+        cycle: str = QUARTERLY_CYCLE,
+    ) -> Iterator[CalendarSpreadData]:
+        """Lazily yield one ``CalendarSpreadData`` per trading day in the window.
+
+        Memory-bounded alternative to ``fetch_calendar_spread_data`` for long
+        windows (e.g. 10 days): only one day of data is in memory at a time.
+        Consumers process each day and keep only the small daily results
+        (P&L, fill stats), aggregating at the end.
+        """
+        for day_start, day_end in self._trading_days(time_start, time_end):
+            yield self.fetch_calendar_spread_data(
+                front_month, product, day_start, day_end, cycle
+            )
 
     def fetch_calendar_spread_contract_specification(
         self,
@@ -339,6 +362,18 @@ class MarketDataFetcher:
 
         Returns a trade frame (see module docstring): ``ts_event`` UTC index,
         ``price``, ``size``, ``side`` columns, in ascending time order.
+        """
+        raise NotImplementedError  # Issue #6
+
+    def _trading_days(
+        self,
+        time_start: TimeLike,
+        time_end: TimeLike,
+    ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+        """Split a time window into per-trading-day (start, end) sub-windows.
+
+        Must respect the CME trading calendar (skip weekends/holidays) and
+        clip the first/last day to ``time_start``/``time_end``.
         """
         raise NotImplementedError  # Issue #6
 
