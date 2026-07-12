@@ -2,7 +2,7 @@
 
 This module defines the *schema* that downstream modules (legging cost #8,
 expected P&L engine #9, lead-lag analysis #11) can build against, plus a
-skeleton ``MarketDataFetcher`` class. Fetching/syncing logic is intentionally
+skeleton ``MarketDataFetcher`` class. Fetching logic is intentionally
 not implemented yet — the private methods raise ``NotImplementedError`` and
 the public methods are pure composition, so they can be unit-tested today
 with mocked privates.
@@ -14,7 +14,11 @@ Data contracts
    - columns (for each level ``lvl`` in ``0..levels-1``, Databento MBP naming):
        ``bid_px_{lvl:02d}``, ``ask_px_{lvl:02d}`` : float (NaN if level empty)
        ``bid_sz_{lvl:02d}``, ``ask_sz_{lvl:02d}`` : float
-   Level 00 is top of book.
+   Level 00 is top of book. Each book keeps its own raw event timestamps —
+   the fetcher does not align the three books onto a common index. Consumers
+   that need cross-instrument comparison should use as-of semantics (e.g.
+   ``pd.merge_asof``): at time t, a book's state is its most recent row at
+   or before t.
 
 2. Trade frame (one per instrument), the unit of executed-trade data used to
    simulate fills:
@@ -24,12 +28,11 @@ Data contracts
        ``size``  : float — traded quantity (contracts)
        ``side``  : str   — aggressor side, ``"A"`` (ask/seller-initiated),
                    ``"B"`` (bid/buyer-initiated) or ``"N"`` (unknown)
-   Trades are events, not state: they are *not* synced onto the book index.
-   A simulation replays them in time order against the synced books.
+   Trades are events, not state. A simulation replays them in time order,
+   reading each book's last state at the trade's timestamp (as-of lookup).
 
-3. ``CalendarSpreadData`` — the three book frames (front leg, back leg,
-   spread instrument) *time-synced onto a common index*, the three raw
-   trade frames, plus their symbols.
+3. ``CalendarSpreadData`` — the three raw book frames (front leg, back leg,
+   spread instrument), the three raw trade frames, plus their symbols.
 
 4. ``CalendarSpreadContractSpec`` — the static CME parameters needed to turn
    points into dollars (tick sizes, multiplier, quote scaling, price format).
@@ -79,26 +82,40 @@ def book_columns(levels: int = 10) -> list[str]:
 QUARTERLY_CYCLE = "HMUZ"
 
 
-def next_contract(front_month: str, cycle: str = QUARTERLY_CYCLE) -> str:
-    """Return the contract month following ``front_month`` in the given cycle.
+def next_contract_month(front_month: str, cycle: str = QUARTERLY_CYCLE) -> str:
+    """Return the contract month following ``front_month`` in the product's listed cycle.
 
-    ``front_month`` is a month-year code like ``"M6"``. Handles year rollover.
+    Used to derive the back leg of a calendar spread: the back month is the
+    *next listed contract* after the front month, and which contract that is
+    depends on the product's listing cycle. Equity index futures (ES, NQ, ...)
+    list quarterly (H=Mar, M=Jun, U=Sep, Z=Dec), so the contract after M6 is
+    U6. Energy products (CL, NG, ...) list every month, so the contract after
+    F6 (Jan) is G6 (Feb) — for those, pass ``cycle=MONTH_CODES``.
 
-    >>> next_contract("M6")
-    'U6'
-    >>> next_contract("Z6")
-    'H7'
+    Args:
+        front_month: Month-year code of the front leg, e.g. ``"M6"`` = June 2026.
+        cycle: The product's listed contract months, in calendar order, as a
+            string of CME month codes. Defaults to the quarterly cycle
+            ``"HMUZ"``. Raises ``ValueError`` if ``front_month``'s month code
+            is not in ``cycle`` — so calling with a monthly product's contract
+            (e.g. ``"F6"``) under the default fails loudly instead of
+            silently picking a wrong back month.
+
+    Must handle year rollover: the contract after Z6 is H7 (quarterly) or F7
+    (monthly). Must raise ``ValueError`` for a month code not in ``cycle``.
+
+    Expected behavior once implemented::
+
+        next_contract_month("M6")                 -> "U6"
+        next_contract_month("Z6")                 -> "H7"
+        next_contract_month("F6", cycle=MONTH_CODES) -> "G6"
+
+    TODO(#7): the cycle should not be caller-supplied — look it up per
+    product from the contract mapping file (e.g. ``"ES": "HMUZ"``,
+    ``"CL": MONTH_CODES``) so the fetcher identifies the right back month
+    from the product code alone.
     """
-    if len(front_month) != 2 or front_month[0] not in cycle or not front_month[1].isdigit():
-        raise ValueError(
-            f"Invalid front month {front_month!r} for cycle {cycle!r} "
-            "(expected month-year code like 'M6')"
-        )
-    month, year = front_month[0], int(front_month[1])
-    pos = cycle.index(month)
-    if pos + 1 < len(cycle):
-        return f"{cycle[pos + 1]}{year}"
-    return f"{cycle[0]}{(year + 1) % 10}"
+    raise NotImplementedError  # Issue #7
 
 
 def split_symbol(symbol: str) -> tuple[str, str, str]:
@@ -117,9 +134,10 @@ def split_symbol(symbol: str) -> tuple[str, str, str]:
 class CalendarSpreadData:
     """Order books and trades for the two legs and the spread instrument.
 
-    The three book frames follow the book-frame schema and share the same
-    index (the result of ``MarketDataFetcher._sync_books``). The three trade
-    frames follow the trade-frame schema and keep their raw event timestamps.
+    All frames keep their own raw event timestamps; the three books are not
+    aligned onto a common index. To read a book's state at an arbitrary time
+    (e.g. the moment a trade happened), use as-of semantics such as
+    ``pd.merge_asof``.
     """
 
     front_symbol: str
@@ -131,13 +149,6 @@ class CalendarSpreadData:
     front_trades: pd.DataFrame
     back_trades: pd.DataFrame
     spread_trades: pd.DataFrame
-
-    @property
-    def is_aligned(self) -> bool:
-        """True if all three frames share an identical index."""
-        return self.front.index.equals(self.back.index) and self.front.index.equals(
-            self.spread.index
-        )
 
 
 @dataclass(frozen=True)
@@ -173,13 +184,13 @@ class CalendarSpreadContractSpec:
 
 
 class MarketDataFetcher:
-    """Fetches time-synced calendar-spread market data from Databento.
+    """Fetches calendar-spread market data (books + trades) from Databento.
 
     Public interface (stable — downstream modules code against this):
-      - ``fetch_calendar_spread_data(symbol1, symbol2, time_start, time_end)``
-      - ``fetch_calendar_spread_contract_specification(symbol1, symbol2)``
+      - ``fetch_calendar_spread_data(front_month, product, time_start, time_end)``
+      - ``fetch_calendar_spread_contract_specification(front_month, product)``
 
-    The private fetch/sync/definition methods are the implementation surface
+    The private fetch/definition methods are the implementation surface
     for Issues #6/#7 and currently raise ``NotImplementedError``.
     """
 
@@ -205,7 +216,7 @@ class MarketDataFetcher:
         time_end: TimeLike,
         cycle: str = QUARTERLY_CYCLE,
     ) -> CalendarSpreadData:
-        """Fetch synced books and raw trades for the front month, back month, and spread.
+        """Fetch raw books and trades for the front month, back month, and spread.
 
         Args:
             front_month: Month-year code of the front leg, e.g. ``"M6"``.
@@ -216,10 +227,10 @@ class MarketDataFetcher:
                 monthly products like CL).
 
         The back month is the next contract in ``cycle`` after
-        ``front_month``. Each instrument's book is fetched separately, then
-        the three book streams are synced onto a common time index. Trades
-        are fetched per instrument and returned on their raw event
-        timestamps (for fill simulation).
+        ``front_month``. Each instrument's books and trades are fetched
+        separately and returned on their raw event timestamps — no
+        cross-instrument alignment is performed (consumers use as-of
+        lookups where needed, e.g. book state at a trade's timestamp).
         """
         front_symbol, back_symbol, spread_symbol = self._resolve_symbols(
             front_month, product, cycle
@@ -228,8 +239,6 @@ class MarketDataFetcher:
         front = self._fetch_single_instrument(front_symbol, time_start, time_end)
         back = self._fetch_single_instrument(back_symbol, time_start, time_end)
         spread = self._fetch_single_instrument(spread_symbol, time_start, time_end)
-
-        front, back, spread = self._sync_books(front, back, spread)
 
         front_trades = self._fetch_single_instrument_trades(front_symbol, time_start, time_end)
         back_trades = self._fetch_single_instrument_trades(back_symbol, time_start, time_end)
@@ -277,7 +286,7 @@ class MarketDataFetcher:
         >>> MarketDataFetcher()._resolve_symbols("M6", "ES")
         ('ESM6', 'ESU6', 'ESM6-ESU6')
         """
-        back_month = next_contract(front_month, cycle)
+        back_month = next_contract_month(front_month, cycle)
         front_symbol = f"{product}{front_month}"
         back_symbol = f"{product}{back_month}"
         spread_symbol = self._build_spread_symbol(front_symbol, back_symbol)
@@ -326,21 +335,6 @@ class MarketDataFetcher:
 
         Returns a trade frame (see module docstring): ``ts_event`` UTC index,
         ``price``, ``size``, ``side`` columns, in ascending time order.
-        """
-        raise NotImplementedError  # Issue #6
-
-    def _sync_books(
-        self,
-        front: pd.DataFrame,
-        back: pd.DataFrame,
-        spread: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Align the three book frames onto a common time index.
-
-        Intended behavior: build the union of event timestamps, forward-fill
-        each book to that index (as-of semantics: at time t, each book shows
-        its most recent state at or before t), and drop leading rows where
-        any book has no state yet. All returned frames share one index.
         """
         raise NotImplementedError  # Issue #6
 
