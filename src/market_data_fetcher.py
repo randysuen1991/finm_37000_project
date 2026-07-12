@@ -198,8 +198,12 @@ class MarketDataFetcher:
         self,
         client: Optional["db.Historical"] = None,
         dataset: str = CME_DATASET,
-        levels: int = 10,
+        levels: int = 1,
     ) -> None:
+        """``levels`` defaults to 1 (MBP-1, top of book): sufficient for the
+        P&L simulation (#9) and far cheaper to fetch and hold in memory than
+        full depth. Pass a higher value only where depth is actually needed
+        (e.g. the implied-vs-real book comparison, #15)."""
         self._client = client
         self._dataset = dataset
         self._levels = levels
