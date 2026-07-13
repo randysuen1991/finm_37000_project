@@ -6,8 +6,8 @@ Wires the components together:
 
 Uses the TEMP ``HardcodedESFetcher`` (ES Jun/Sep 2026, real Databento data,
 disk-cached) until Issues #6/#7 land, and the placeholder (random)
-``LeggingCostCalculator`` until Issue #8 lands. ``generate_pnl`` is the next
-step of #9, so for now the script reports what was consumed.
+``LeggingCostCalculator`` until Issue #8 lands — so the P&L numbers are not
+meaningful yet, but the whole pipeline runs.
 
 Run:
     uv run src/run_pnl_pipeline.py
@@ -29,12 +29,25 @@ DAYS = ["2026-06-09", "2026-06-10"]
 SESSION_START_UTC = "16:00:00"  # 10:00 AM CT, the README snapshot hour
 SESSION_LENGTH = pd.Timedelta(seconds=60)
 
+# Model parameters (Issue #9) — tune these
+P_QUEUE_HEAD = 0.5      # probability we are at the head of the best queue
+MAX_POSITION = 5.0      # max spread contracts we are willing to hold
+PASSIVE_FEE = 0.0       # $/contract on passive fills (negative = rebate)
+AGGRESSIVE_FEE = 0.0    # $/contract when legging out at the position cap
+CONTRACT_MULTIPLIER = 50.0  # ES: $ per index point
+
 
 def main() -> None:
     client = db.Historical(get_databento_api_key())
     fetcher = HardcodedESFetcher(client=client, levels=1)
     cost_calculator = LeggingCostCalculator()  # placeholder costs (Issue #8)
-    pnl_calculator = PnLCalculator()
+    pnl_calculator = PnLCalculator(
+        p=P_QUEUE_HEAD,
+        max_position=MAX_POSITION,
+        passive_fee=PASSIVE_FEE,
+        aggressive_fee=AGGRESSIVE_FEE,
+        contract_multiplier=CONTRACT_MULTIPLIER,
+    )
 
     for day in DAYS:
         t0 = pd.Timestamp(f"{day}T{SESSION_START_UTC}", tz="UTC")
@@ -51,12 +64,8 @@ def main() -> None:
         print(f"  consumed {consumed} spread transaction(s)")
 
     print(f"\nTotal transactions consumed: {pnl_calculator.transaction_count}")
-
-    try:
-        pnl = pnl_calculator.generate_pnl()
-        print(pnl)
-    except NotImplementedError:
-        print("generate_pnl() not implemented yet — next step of Issue #9.")
+    print("\nExpected P&L summary (legging costs are PLACEHOLDER randoms until #8):")
+    print(pnl_calculator.generate_pnl().to_string())
 
 
 if __name__ == "__main__":

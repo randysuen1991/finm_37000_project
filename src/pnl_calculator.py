@@ -105,14 +105,62 @@ class SpreadTransaction:
 
 
 class PnLCalculator:
-    """Stateful P&L accumulator for spread transactions (Issue #9).
+    """Stateful expected-P&L accumulator for spread transactions (Issue #9).
 
-    Feed it one transaction at a time with ``consume``; call
-    ``generate_pnl`` once at the end of the period.
+    Model parameters (set by the user):
+      - ``p``: probability of being at the head of the best bid/ask queue at
+        any moment. Applied as *expected value*: every historical spread
+        trade fills us with weight ``p`` (fill quantity = p x trade size),
+        so one pass gives the expected P&L deterministically.
+      - ``max_position``: maximum absolute spread position ``m`` we are
+        willing to hold. When a fill would push us beyond ``m``, we still
+        take the fill (we were resting in the queue) but immediately flatten
+        the excess by legging the outrights, paying the #8 legging cost plus
+        the aggressive fee on the hedged contracts.
+      - ``passive_fee`` / ``aggressive_fee``: $/contract. ``passive_fee`` is
+        charged on every passively filled contract (negative = rebate);
+        ``aggressive_fee`` is charged per spread contract legged out (use it
+        to reflect both outright legs' fees).
+      - ``contract_multiplier``: $ per point (ES: 50) — converts point-based
+        prices and legging costs into dollars.
+
+    Side convention (aggressor side of the trade): ``"B"`` = buyer lifted
+    the ask, so we (passive) SOLD at the trade price; ``"A"`` = seller hit
+    the bid, so we BOUGHT. ``"N"`` (unknown) trades are skipped.
+
+    Accounting is cash-based: fills move cash at the trade price, the
+    residual position is marked at the last seen spread mid in
+    ``generate_pnl`` — so spread-capture edge and inventory moves are both
+    captured without separate bookkeeping.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        p: float,
+        max_position: float,
+        passive_fee: float = 0.0,
+        aggressive_fee: float = 0.0,
+        contract_multiplier: float = 50.0,
+    ) -> None:
+        if not 0.0 <= p <= 1.0:
+            raise ValueError(f"p must be in [0, 1], got {p}")
+        if max_position <= 0:
+            raise ValueError(f"max_position must be > 0, got {max_position}")
+        self.p = p
+        self.max_position = max_position
+        self.passive_fee = passive_fee
+        self.aggressive_fee = aggressive_fee
+        self.contract_multiplier = contract_multiplier
+
         self._transactions: list[SpreadTransaction] = []
+        self._position = 0.0        # signed spread contracts (expected)
+        self._cash = 0.0            # $ from fills at trade prices
+        self._passive_fees = 0.0    # $ paid on passive fills (neg = rebates earned)
+        self._hedge_costs = 0.0     # $ legging cost + aggressive fees on hedged qty
+        self._filled_qty = 0.0      # expected contracts filled passively
+        self._hedged_qty = 0.0      # expected contracts immediately legged out
+        self._skipped = 0           # trades with unknown aggressor side
+        self._last_spread_mid: Optional[float] = None
 
     def consume(
         self,
@@ -122,14 +170,15 @@ class PnLCalculator:
         trade: pd.Series,
         cost: float,
     ) -> None:
-        """Record one spread transaction.
+        """Process one spread transaction (expected-value fill).
 
         Args:
             front_snapshot / back_snapshot / spread_snapshot: book-frame rows
                 as of the trade's timestamp.
             trade: trade-frame row (``price``, ``size``, ``side``; its
                 ``name`` is the event timestamp).
-            cost: legging cost in points from the #8 calculator.
+            cost: legging cost in points from the #8 calculator, for the
+                contracts hedged at the position cap.
         """
         self._transactions.append(
             SpreadTransaction(
@@ -143,20 +192,79 @@ class PnLCalculator:
                 cost=float(cost),
             )
         )
+        self._last_spread_mid = (
+            spread_snapshot["bid_px_00"] + spread_snapshot["ask_px_00"]
+        ) / 2.0
+
+        side = str(trade["side"])
+        if side == "B":
+            direction = -1.0  # buyer aggressed: we sold
+        elif side == "A":
+            direction = +1.0  # seller aggressed: we bought
+        else:
+            self._skipped += 1
+            return
+
+        price = float(trade["price"])
+        q = self.p * float(trade["size"])  # expected fill quantity
+        if q == 0.0:
+            return
+
+        # position cap: hedge the part that would exceed max_position
+        new_pos = self._position + direction * q
+        excess = max(0.0, abs(new_pos) - self.max_position)
+        hedged = min(q, excess)
+        retained = q - hedged
+
+        # all q contracts were filled passively -> passive fee/rebate
+        self._filled_qty += q
+        self._passive_fees += self.passive_fee * q
+
+        # retained contracts change position and cash at the trade price
+        self._position += direction * retained
+        self._cash += -direction * price * self.contract_multiplier * retained
+
+        # hedged contracts are legged out immediately: lose the legging cost
+        # (points -> $) plus the aggressive fee, and leave no position behind
+        if hedged > 0.0:
+            self._hedged_qty += hedged
+            self._hedge_costs += (
+                cost * self.contract_multiplier + self.aggressive_fee
+            ) * hedged
 
     @property
     def transaction_count(self) -> int:
         return len(self._transactions)
 
-    def generate_pnl(self) -> pd.DataFrame:
+    @property
+    def position(self) -> float:
+        return self._position
+
+    def generate_pnl(self) -> pd.Series:
         """Aggregate consumed transactions into expected P&L for the period.
 
-        Intended output (to be built next): expected P&L per contract and
-        for the period, decomposed into spread edge earned, legging cost
-        paid, adverse selection, and inventory risk — the inputs Issue #10
-        needs to solve for the break-even incentive.
+        Returns a summary Series. ``net_pnl`` = cash from fills + residual
+        position marked at the last seen spread mid - passive fees - hedge
+        costs. This is the number Issue #10 holds against zero to solve for
+        the break-even incentive.
         """
-        raise NotImplementedError  # next step of Issue #9
+        mark_price = self._last_spread_mid if self._last_spread_mid is not None else 0.0
+        position_mark = self._position * mark_price * self.contract_multiplier
+        net_pnl = self._cash + position_mark - self._passive_fees - self._hedge_costs
+        return pd.Series(
+            {
+                "transactions": float(self.transaction_count),
+                "skipped_unknown_side": float(self._skipped),
+                "filled_contracts": self._filled_qty,
+                "hedged_contracts": self._hedged_qty,
+                "final_position": self._position,
+                "cash": self._cash,
+                "position_mark": position_mark,
+                "passive_fees": self._passive_fees,
+                "hedge_costs": self._hedge_costs,
+                "net_pnl": net_pnl,
+            }
+        )
 
 
 def _merged_events(data: CalendarSpreadData):
