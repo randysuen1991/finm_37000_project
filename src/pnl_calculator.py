@@ -26,6 +26,7 @@ Components:
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Optional
 
@@ -109,9 +110,11 @@ class PnLCalculator:
 
     Model parameters (set by the user):
       - ``p``: probability of being at the head of the best bid/ask queue at
-        any moment. Applied as *expected value*: every historical spread
-        trade fills us with weight ``p`` (fill quantity = p x trade size),
-        so one pass gives the expected P&L deterministically.
+        any moment. Applied per trade as a Bernoulli draw: each historical
+        spread trade fills us *in full* with probability ``p`` (and not at
+        all otherwise). One replay is therefore a single random sample of
+        the P&L — run several seeds and average to estimate the expected
+        P&L. Pass ``seed`` for reproducibility.
       - ``max_position``: maximum absolute spread position ``m`` we are
         willing to hold. When a fill would push us beyond ``m``, we still
         take the fill (we were resting in the queue) but immediately flatten
@@ -142,24 +145,26 @@ class PnLCalculator:
         passive_fee: float = 0.0,
         aggressive_fee: float = 0.0,
         contract_multiplier: float = 50.0,
+        seed: Optional[int] = None,
     ) -> None:
         if not 0.0 <= p <= 1.0:
             raise ValueError(f"p must be in [0, 1], got {p}")
         if max_position <= 0:
             raise ValueError(f"max_position must be > 0, got {max_position}")
         self.p = p
+        self._rng = random.Random(seed)
         self.max_position = max_position
         self.passive_fee = passive_fee
         self.aggressive_fee = aggressive_fee
         self.contract_multiplier = contract_multiplier
 
         self._transactions: list[SpreadTransaction] = []
-        self._position = 0.0        # signed spread contracts (expected)
+        self._position = 0.0        # signed spread contracts
         self._cash = 0.0            # $ from fills at trade prices
         self._passive_fees = 0.0    # $ paid on passive fills (neg = rebates earned)
         self._hedge_costs = 0.0     # $ legging cost + aggressive fees on hedged qty
-        self._filled_qty = 0.0      # expected contracts filled passively
-        self._hedged_qty = 0.0      # expected contracts immediately legged out
+        self._filled_qty = 0.0      # contracts filled passively
+        self._hedged_qty = 0.0      # contracts immediately legged out
         self._skipped = 0           # trades with unknown aggressor side
         self._last_spread_mid: Optional[float] = None
 
@@ -171,7 +176,7 @@ class PnLCalculator:
         trade: pd.Series,
         cost: float,
     ) -> None:
-        """Process one spread transaction (expected-value fill).
+        """Process one spread transaction (full fill with probability ``p``).
 
         Args:
             front_snapshot / back_snapshot / spread_snapshot: book-frame rows
@@ -206,8 +211,12 @@ class PnLCalculator:
             self._skipped += 1
             return
 
+        # Bernoulli fill: the trade fills us in full with probability p
+        if self._rng.random() >= self.p:
+            return  # not at the head of the queue for this trade
+
         price = float(trade["price"])
-        q = self.p * float(trade["size"])  # expected fill quantity
+        q = float(trade["size"])
         if q == 0.0:
             return
 
@@ -240,12 +249,13 @@ class PnLCalculator:
         return self._position
 
     def generate_pnl(self) -> pd.Series:
-        """Aggregate consumed transactions into expected P&L for the period.
+        """Aggregate consumed transactions into the period's P&L (one sample).
 
         Returns a summary Series. ``net_pnl`` = cash from fills + residual
         position marked at the last seen spread mid - passive fees - hedge
-        costs. This is the number Issue #10 holds against zero to solve for
-        the break-even incentive.
+        costs. Fills are random (probability ``p`` per trade), so this is
+        one sample path — average ``net_pnl`` over several seeds to estimate
+        the expected P&L that Issue #10 holds against zero.
         """
         mark_price = self._last_spread_mid if self._last_spread_mid is not None else 0.0
         position_mark = self._position * mark_price * self.contract_multiplier

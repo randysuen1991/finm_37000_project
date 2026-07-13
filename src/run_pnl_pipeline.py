@@ -30,8 +30,10 @@ SESSION_START_UTC = "16:00:00"  # 10:00 AM CT, the README snapshot hour
 SESSION_LENGTH = pd.Timedelta(seconds=60)
 
 # Model parameters (Issue #9) — tune these
-P_QUEUE_HEAD = 0.5      # probability we are at the head of the best queue
+P_QUEUE_HEAD = 0.5      # probability a trade fills us in full (queue head)
 MAX_POSITION = 5.0      # max spread contracts we are willing to hold
+SEED = 42               # fills are random; fix the seed for reproducibility.
+                        # Average net_pnl over several seeds for expected P&L.
 PASSIVE_FEE = 0.0       # $/contract on passive fills (negative = rebate)
 AGGRESSIVE_FEE = 0.0    # $/contract when legging out at the position cap
 CONTRACT_MULTIPLIER = 50.0  # ES: $ per index point
@@ -58,6 +60,7 @@ def main() -> None:
         passive_fee=PASSIVE_FEE,
         aggressive_fee=AGGRESSIVE_FEE,
         contract_multiplier=CONTRACT_MULTIPLIER,
+        seed=SEED,
     )
 
     for day in DAYS:
