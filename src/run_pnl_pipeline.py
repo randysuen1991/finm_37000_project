@@ -23,11 +23,11 @@ from legging_cost_calculator import LeggingCostCalculator
 from pnl_calculator import PnLCalculator, replay
 from util import get_databento_api_key
 
-# Two demo sessions: a 5-minute window on each day (kept small so the
-# mbp-1 downloads stay light; widen once the day-by-day cache is in place).
+# Two demo sessions: a 60-second window on each day, matching the windows
+# demo_print_books.py already cached to disk — so this runs offline.
 DAYS = ["2026-06-09", "2026-06-10"]
 SESSION_START_UTC = "16:00:00"  # 10:00 AM CT, the README snapshot hour
-SESSION_LENGTH = pd.Timedelta(minutes=5)
+SESSION_LENGTH = pd.Timedelta(seconds=60)
 
 
 def main() -> None:
