@@ -18,6 +18,7 @@ import databento as db
 import pandas as pd
 
 from demo_print_books import HardcodedESFetcher
+from fee_schedule import get_fee_rates
 from legging_cost_calculator import LeggingCostCalculator
 from market_data_fetcher import CalendarSpreadContractSpec
 from pnl_calculator import PnLCalculator, replay
@@ -34,8 +35,9 @@ P_QUEUE_HEAD = 0.5      # probability a trade fills us in full (queue head)
 MAX_POSITION = 5.0      # max spread contracts we are willing to hold
 SEED = 42               # fills are random; fix the seed for reproducibility.
                         # Average net_pnl over several seeds for expected P&L.
-PASSIVE_FEE = 0.0       # $/contract on passive fills (negative = rebate)
-AGGRESSIVE_FEE = 0.0    # $/contract when legging out at the position cap
+FEE_TIER = "non_member" # see fee_schedule.py: non_member | member_firm |
+                        # individual_member | fee_waiver
+FEES = get_fee_rates("ES", FEE_TIER)
 CONTRACT_MULTIPLIER = 50.0  # ES: $ per index point
 
 # TEMP hardcoded ES spec until #7's mapping file provides it
@@ -57,8 +59,8 @@ def main() -> None:
     pnl_calculator = PnLCalculator(
         p=P_QUEUE_HEAD,
         max_position=MAX_POSITION,
-        passive_fee=PASSIVE_FEE,
-        aggressive_fee=AGGRESSIVE_FEE,
+        passive_fee=FEES.passive_fee,
+        aggressive_fee=FEES.aggressive_fee,
         contract_multiplier=CONTRACT_MULTIPLIER,
         seed=SEED,
     )
