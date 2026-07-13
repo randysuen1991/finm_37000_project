@@ -5,9 +5,8 @@ Wires the components together:
     MarketDataFetcher  ->  CalendarSpreadData  ->  replay  ->  PnLCalculator
 
 Uses the TEMP ``HardcodedESFetcher`` (ES Jun/Sep 2026, real Databento data,
-disk-cached) until Issues #6/#7 land, and the placeholder (random)
-``LeggingCostCalculator`` until Issue #8 lands — so the P&L numbers are not
-meaningful yet, but the whole pipeline runs.
+disk-cached) until Issues #6/#7 land. The ``LeggingCostCalculator`` is the
+real #8 logic (adopted locally from PR #21 with the side-convention fix).
 
 Run:
     uv run src/run_pnl_pipeline.py
@@ -20,6 +19,7 @@ import pandas as pd
 
 from demo_print_books import HardcodedESFetcher
 from legging_cost_calculator import LeggingCostCalculator
+from market_data_fetcher import CalendarSpreadContractSpec
 from pnl_calculator import PnLCalculator, replay
 from util import get_databento_api_key
 
@@ -36,11 +36,22 @@ PASSIVE_FEE = 0.0       # $/contract on passive fills (negative = rebate)
 AGGRESSIVE_FEE = 0.0    # $/contract when legging out at the position cap
 CONTRACT_MULTIPLIER = 50.0  # ES: $ per index point
 
+# TEMP hardcoded ES spec until #7's mapping file provides it
+ES_SPEC = CalendarSpreadContractSpec(
+    product_code="ES",
+    front_symbol="ESM6",
+    back_symbol="ESU6",
+    spread_symbol="ESM6-ESU6",
+    outright_tick_size=0.25,
+    spread_tick_size=0.05,
+    contract_multiplier=CONTRACT_MULTIPLIER,
+)
+
 
 def main() -> None:
     client = db.Historical(get_databento_api_key())
     fetcher = HardcodedESFetcher(client=client, levels=1)
-    cost_calculator = LeggingCostCalculator()  # placeholder costs (Issue #8)
+    cost_calculator = LeggingCostCalculator(ES_SPEC)  # real #8 logic (from PR #21, fixed)
     pnl_calculator = PnLCalculator(
         p=P_QUEUE_HEAD,
         max_position=MAX_POSITION,
@@ -64,7 +75,7 @@ def main() -> None:
         print(f"  consumed {consumed} spread transaction(s)")
 
     print(f"\nTotal transactions consumed: {pnl_calculator.transaction_count}")
-    print("\nExpected P&L summary (legging costs are PLACEHOLDER randoms until #8):")
+    print("\nExpected P&L summary:")
     print(pnl_calculator.generate_pnl().to_string())
 
 

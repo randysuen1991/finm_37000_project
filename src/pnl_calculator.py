@@ -101,7 +101,7 @@ class SpreadTransaction:
     front_snapshot: pd.Series
     back_snapshot: pd.Series
     spread_snapshot: pd.Series
-    cost: float  # legging cost (points) from Issue #8's calculator
+    cost: float  # legging cost ($ per spread contract) from Issue #8's calculator
 
 
 class PnLCalculator:
@@ -122,7 +122,8 @@ class PnLCalculator:
         ``aggressive_fee`` is charged per spread contract legged out (use it
         to reflect both outright legs' fees).
       - ``contract_multiplier``: $ per point (ES: 50) — converts point-based
-        prices and legging costs into dollars.
+        trade/mark prices into dollars (legging costs from #8 arrive already
+        in dollars).
 
     Side convention (aggressor side of the trade): ``"B"`` = buyer lifted
     the ask, so we (passive) SOLD at the trade price; ``"A"`` = seller hit
@@ -177,8 +178,8 @@ class PnLCalculator:
                 as of the trade's timestamp.
             trade: trade-frame row (``price``, ``size``, ``side``; its
                 ``name`` is the event timestamp).
-            cost: legging cost in points from the #8 calculator, for the
-                contracts hedged at the position cap.
+            cost: legging cost in dollars per spread contract from the #8
+                calculator, for the contracts hedged at the position cap.
         """
         self._transactions.append(
             SpreadTransaction(
@@ -225,12 +226,10 @@ class PnLCalculator:
         self._cash += -direction * price * self.contract_multiplier * retained
 
         # hedged contracts are legged out immediately: lose the legging cost
-        # (points -> $) plus the aggressive fee, and leave no position behind
+        # ($/contract, from #8) plus the aggressive fee, no position behind
         if hedged > 0.0:
             self._hedged_qty += hedged
-            self._hedge_costs += (
-                cost * self.contract_multiplier + self.aggressive_fee
-            ) * hedged
+            self._hedge_costs += (cost + self.aggressive_fee) * hedged
 
     @property
     def transaction_count(self) -> int:
@@ -315,7 +314,9 @@ def replay(
         if books["front"] is None or books["back"] is None or books["spread"] is None:
             continue  # a book has no state yet at this timepoint
 
-        cost = cost_calculator.get_cost(books["front"], books["back"], books["spread"])
+        cost = cost_calculator.get_cost(
+            books["front"], books["back"], books["spread"], str(payload["side"])
+        )
         pnl_calculator.consume(
             books["front"], books["back"], books["spread"], payload, cost
         )
